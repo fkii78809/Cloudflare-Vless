@@ -3,14 +3,14 @@ import { connect } from 'cloudflare:sockets';
 const 小可爱文字解码器 = new TextDecoder('utf-8', { fatal: true });
 const 关门原因编码器 = new TextEncoder();
 const 关门原因解码器 = new TextDecoder();
-const 我的小甜甜身份证 = '88888888-8888-8888-8888-888888888888';  //建议改成你的UUID
+const 我的小甜甜身份证 = '88888888-8888-8888-8888-888888888888';  //建议修改为你自己的UUID
 const 身份证字节 = ((uuid) => {
   const hex = uuid.replace(/-/g, '');
   const arr = new Uint8Array(16);
   for (let i = 0; i < 16; i++) arr[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   return arr;
 })(我的小甜甜身份证);
-const 默认备用小可爱地址 = 'dsl253-007-079.nyc1.dsl.speakeasy.net';  //默认美国住宅IP，建议改成你的落地IP
+const 默认备用小可爱地址 = 'dsl253-007-079.nyc1.dsl.speakeasy.net';  //兜底落地IP，默认为某美国住宅IP，建议修改为你自己的落地IP
 
 // ═══════════════════════════════════════════════════════════════════
 // ⚙️ 可调参数（千兆网络，二选一，默认启用【预设B：千兆日常】）
@@ -243,7 +243,6 @@ async function 开启数据小火车(服务端, 当前备用地址) {
           const 当前数据 = 消息待办队列[消息队列读指针++];
           消息队列当前字节 = Math.max(0, 消息队列当前字节 - 当前数据.byteLength);
           if (消息队列读指针 >= 64) {
-            // splice 在同步路径执行（此处无 await），queue.length 缩短后 readPtr 归 0，逻辑正确。
             消息待办队列.splice(0, 消息队列读指针);
             消息队列读指针 = 0;
           }
@@ -371,8 +370,17 @@ async function 开启数据小火车(服务端, 当前备用地址) {
         if (已经关门了) { try { 临时通道.close(); } catch {} return; }
         小火车TCP通道 = 临时通道;
       } catch {
-        关门谢客(1011, '所有路都堵死啦');
-        return;
+        try {
+          if (当前备用地址 === 默认备用小可爱地址) throw new Error('同址跳过');
+          const { 备用主机, 备用端口 } = 拆分地址和端口(默认备用小可爱地址, 目标端口);
+          if (!备用主机) { 关门谢客(1011, '兜底地址主机为空'); return; }
+          const 临时通道 = await 带超时的连接(备用主机, 备用端口, 备用连接超时毫秒);
+          if (已经关门了) { try { 临时通道.close(); } catch {} return; }
+          小火车TCP通道 = 临时通道;
+        } catch {
+          关门谢客(1011, '所有路都堵死啦');
+          return;
+        }
       }
     }
 
