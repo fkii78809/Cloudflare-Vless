@@ -123,6 +123,19 @@ export default {
     const 握手头 = 来自外面的请求.headers.get('Upgrade');
     if (握手头 && (握手头 === 'websocket' || 握手头.toLowerCase() === 'websocket')) {
       const 网址 = new URL(来自外面的请求.url);
+      
+      const 携带SS通行证 = 网址.pathname.includes(我的小甜甜身份证);
+
+      const 早期数据头 = 来自外面的请求.headers.get('sec-websocket-protocol');
+      let 早期数据 = null;
+      if (早期数据头) {
+        try {
+          let base64 = 早期数据头.replace(/-/g, '+').replace(/_/g, '/');
+          base64 += '='.repeat((4 - base64.length % 4) % 4);
+          早期数据 = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+        } catch (e) {}
+      }
+
       let 候选地址 = 默认备用小可爱地址;
       if (网址.searchParams.has('ip')) {
         候选地址 = 网址.searchParams.get('ip');
@@ -132,23 +145,23 @@ export default {
           候选地址 = decodeURIComponent(提取路径IP[1]);
         }
       }
-      return 升级成小可爱通道(await 获取动态地址(候选地址));
+      return 升级成小可爱通道(await 获取动态地址(候选地址), 携带SS通行证, 早期数据);
     }
     return new Response('Not Found', { status: 404 });
   },
 };
 
-function 升级成小可爱通道(当前备用地址) {
+function 升级成小可爱通道(当前备用地址, 携带SS通行证, 早期数据) {
   const 泡泡对 = new WebSocketPair();
   const 小甜甜端 = 泡泡对[0];
   const 服务端 = 泡泡对[1];
   服务端.accept();
-  try { 服务端.send(握手确认包); } catch {}
-  开启数据小火车(服务端, 当前备用地址).catch((e) => { console.error('[小火车]', e); });
+  // ⚠️ 这里去掉了原版向所有连接发送 [0,0] 的操作，移交给了后续判断
+  开启数据小火车(服务端, 当前备用地址, 携带SS通行证, 早期数据).catch((e) => { console.error('[小火车]', e); });
   return new Response(null, { status: 101, webSocket: 小甜甜端 });
 }
 
-async function 开启数据小火车(服务端, 当前备用地址) {
+async function 开启数据小火车(服务端, 当前备用地址, 携带SS通行证, 早期数据) {
   let 小火车TCP通道;
   let 已经关门了 = false;
 
@@ -218,22 +231,7 @@ async function 开启数据小火车(服务端, 当前备用地址) {
   let 消息队列当前字节 = 0;
   let 消息队列读指针 = 0;
 
-  服务端.addEventListener('message', (事件) => {
-    if (已经关门了) return;
-    if (typeof 事件.data === 'string') { 关门谢客(1008, '不支持文本帧'); return; }
-
-    const 帧字节 = 事件.data.byteLength;
-    if (
-      消息待办队列.length >= 消息队列条数上限 ||
-      消息队列当前字节 + 帧字节 > 消息队列字节上限
-    ) {
-      关门谢客(1011, '消息队列溢出');
-      return;
-    }
-
-    消息待办队列.push(事件.data instanceof ArrayBuffer ? new Uint8Array(事件.data) : 事件.data);
-    消息队列当前字节 += 帧字节;
-
+  const 触发消息处理 = () => {
     if (!正在处理消息) {
       正在处理消息 = true;
       (async () => {
@@ -280,6 +278,30 @@ async function 开启数据小火车(服务端, 当前备用地址) {
         if (!已经关门了) 关门谢客(1011, '消息队列崩溃');
       });
     }
+  };
+
+  if (早期数据 && 早期数据.byteLength > 0) {
+    消息待办队列.push(早期数据);
+    消息队列当前字节 += 早期数据.byteLength;
+    触发消息处理();
+  }
+
+  服务端.addEventListener('message', (事件) => {
+    if (已经关门了) return;
+    if (typeof 事件.data === 'string') { 关门谢客(1008, '不支持文本帧'); return; }
+
+    const 帧字节 = 事件.data.byteLength;
+    if (
+      消息待办队列.length >= 消息队列条数上限 ||
+      消息队列当前字节 + 帧字节 > 消息队列字节上限
+    ) {
+      关门谢客(1011, '消息队列溢出');
+      return;
+    }
+
+    消息待办队列.push(事件.data instanceof ArrayBuffer ? new Uint8Array(事件.data) : 事件.data);
+    消息队列当前字节 += 帧字节;
+    触发消息处理();
   });
 
   async function 解读第一个糖果包(糖果数据) {
@@ -288,73 +310,116 @@ async function 开启数据小火车(服务端, 当前备用地址) {
     const 有效长度 = 糖果数据.byteLength;
     const 视图 = new DataView(缓冲区, 视图偏移, 有效长度);
 
-    if (有效长度 < 24) { 关门谢客(1008, '糖果包太短了'); return; }
+    if (有效长度 < 7) { 关门谢客(1008, '糖果包太短了'); return; }
 
-    if (!身份证匹配(视图, 1)) {
-      关门谢客(1008, '身份证不对哦');
+    const 协议首字节 = 视图.getUint8(0);
+    
+    let 目标地址 = '';
+    let 目标端口 = 0;
+    let 数据负载起始 = 0;
+
+    if (协议首字节 === 0) {
+      if (有效长度 < 24) { 关门谢客(1008, '糖果包太短了'); return; }
+
+      if (!身份证匹配(视图, 1)) {
+        关门谢客(1008, '身份证不对哦');
+        return;
+      }
+
+      const 附加长度 = 视图.getUint8(17);
+      const cmd字节位 = 18 + 附加长度;
+      if (cmd字节位 >= 有效长度) { 关门谢客(1008, '糖果包太短了'); return; }
+
+      const cmd = 视图.getUint8(cmd字节位);
+      if (cmd !== 1) { 关门谢客(1008, '不支持的指令类型'); return; }
+      const 端口起始位 = cmd字节位 + 1;
+      if (端口起始位 + 2 > 有效长度) { 关门谢客(1008, '糖果包太短了'); return; }
+
+      目标端口 = 视图.getUint16(端口起始位);
+      if (目标端口 === 0) { 关门谢客(1008, '端口不合法'); return; }
+
+      const 地址类型起始位 = 端口起始位 + 2;
+      if (地址类型起始位 >= 有效长度) { 关门谢客(1008, '糖果包太短了'); return; }
+      const 地址类型 = 视图.getUint8(地址类型起始位);
+
+      let 地址字节长度 = 0;
+      let 地址数据起始位 = 地址类型起始位 + 1;
+
+      switch (地址类型) {
+        case 1: // IPv4
+          if (地址数据起始位 + 4 > 有效长度) { 关门谢客(1008, '糖果包太短了'); return; }
+          地址字节长度 = 4;
+          目标地址 = `${视图.getUint8(地址数据起始位)}.${视图.getUint8(地址数据起始位 + 1)}.${视图.getUint8(地址数据起始位 + 2)}.${视图.getUint8(地址数据起始位 + 3)}`;
+          break;
+        case 2: // 域名
+          if (地址数据起始位 >= 有效长度) { 关门谢客(1008, '糖果包太短了'); return; }
+          地址字节长度 = 视图.getUint8(地址数据起始位);
+          if (地址字节长度 === 0) { 关门谢客(1008, '地址为空'); return; }
+          if (地址字节长度 > 253) { 关门谢客(1008, '域名过长'); return; }
+          地址数据起始位 += 1;
+          if (地址数据起始位 + 地址字节长度 > 有效长度) { 关门谢客(1008, '糖果包太短了'); return; }
+          目标地址 = 小可爱文字解码器.decode(
+            new Uint8Array(缓冲区, 视图偏移 + 地址数据起始位, 地址字节长度)
+          );
+          break;
+        case 3: // IPv6
+          if (地址数据起始位 + 16 > 有效长度) { 关门谢客(1008, '糖果包太短了'); return; }
+          地址字节长度 = 16;
+          {
+            const b = 地址数据起始位;
+            目标地址 =
+              视图.getUint16(b).toString(16)      + ':' +
+              视图.getUint16(b + 2).toString(16)  + ':' +
+              视图.getUint16(b + 4).toString(16)  + ':' +
+              视图.getUint16(b + 6).toString(16)  + ':' +
+              视图.getUint16(b + 8).toString(16)  + ':' +
+              视图.getUint16(b + 10).toString(16) + ':' +
+              视图.getUint16(b + 12).toString(16) + ':' +
+              视图.getUint16(b + 14).toString(16);
+          }
+          break;
+        default:
+          关门谢客(1008, '不认识的地址类型');
+          return;
+      }
+      数据负载起始 = 地址数据起始位 + 地址字节长度;
+
+      // ⚠️ 关键修复：仅在确认是VL协议后，才发送[0,0]迎宾礼！
+      try { 服务端.send(握手确认包); } catch {}
+
+    } else if (协议首字节 === 1 || 协议首字节 === 3 || 协议首字节 === 4) {
+      if (!携带SS通行证) { 关门谢客(1008, '抓到一只没有通行证的野猫'); return; }
+
+      const SS地址类型 = 协议首字节;
+      switch (SS地址类型) {
+        case 1: // IPv4
+          if (有效长度 < 7) { 关门谢客(1008, 'SS-V4包太短'); return; }
+          目标地址 = `${视图.getUint8(1)}.${视图.getUint8(2)}.${视图.getUint8(3)}.${视图.getUint8(4)}`;
+          目标端口 = 视图.getUint16(5);
+          数据负载起始 = 7;
+          break;
+        case 3: // 域名
+          const 域名长度 = 视图.getUint8(1);
+          if (有效长度 < 4 + 域名长度) { 关门谢客(1008, 'SS-域名包太短'); return; }
+          目标地址 = 小可爱文字解码器.decode(new Uint8Array(缓冲区, 视图偏移 + 2, 域名长度));
+          目标端口 = 视图.getUint16(2 + 域名长度);
+          数据负载起始 = 4 + 域名长度;
+          break;
+        case 4: // IPv6
+          if (有效长度 < 19) { 关门谢客(1008, 'SS-V6包太短'); return; }
+          const ipv6 = [];
+          for (let i = 0; i < 8; i++) ipv6.push(视图.getUint16(1 + i * 2).toString(16));
+          目标地址 = ipv6.join(':');
+          目标端口 = 视图.getUint16(17);
+          数据负载起始 = 19;
+          break;
+      }
+    } else {
+      关门谢客(1008, '不支持的神秘星际语言');
       return;
     }
 
-    const 附加长度 = 视图.getUint8(17);
-    const cmd字节位 = 18 + 附加长度;
-    if (cmd字节位 >= 有效长度) { 关门谢客(1008, '糖果包太短了'); return; }
-
-    const cmd = 视图.getUint8(cmd字节位);
-    if (cmd !== 1) { 关门谢客(1008, '不支持的指令类型'); return; }
-    const 端口起始位 = cmd字节位 + 1;
-    if (端口起始位 + 2 > 有效长度) { 关门谢客(1008, '糖果包太短了'); return; }
-
-    const 目标端口 = 视图.getUint16(端口起始位);
-    if (目标端口 === 0) { 关门谢客(1008, '端口不合法'); return; }
-
-    const 地址类型起始位 = 端口起始位 + 2;
-    if (地址类型起始位 >= 有效长度) { 关门谢客(1008, '糖果包太短了'); return; }
-    const 地址类型 = 视图.getUint8(地址类型起始位);
-
-    let 地址字节长度 = 0;
-    let 目标地址 = '';
-    let 地址数据起始位 = 地址类型起始位 + 1;
-
-    switch (地址类型) {
-      case 1: // IPv4
-        if (地址数据起始位 + 4 > 有效长度) { 关门谢客(1008, '糖果包太短了'); return; }
-        地址字节长度 = 4;
-        目标地址 = `${视图.getUint8(地址数据起始位)}.${视图.getUint8(地址数据起始位 + 1)}.${视图.getUint8(地址数据起始位 + 2)}.${视图.getUint8(地址数据起始位 + 3)}`;
-        break;
-      case 2: // 域名
-        if (地址数据起始位 >= 有效长度) { 关门谢客(1008, '糖果包太短了'); return; }
-        地址字节长度 = 视图.getUint8(地址数据起始位);
-        if (地址字节长度 === 0) { 关门谢客(1008, '地址为空'); return; }
-        if (地址字节长度 > 253) { 关门谢客(1008, '域名过长'); return; }
-        地址数据起始位 += 1;
-        if (地址数据起始位 + 地址字节长度 > 有效长度) { 关门谢客(1008, '糖果包太短了'); return; }
-        目标地址 = 小可爱文字解码器.decode(
-          new Uint8Array(缓冲区, 视图偏移 + 地址数据起始位, 地址字节长度)
-        );
-        break;
-      case 3: // IPv6
-        if (地址数据起始位 + 16 > 有效长度) { 关门谢客(1008, '糖果包太短了'); return; }
-        地址字节长度 = 16;
-        {
-          const b = 地址数据起始位;
-          目标地址 =
-            视图.getUint16(b).toString(16)      + ':' +
-            视图.getUint16(b + 2).toString(16)  + ':' +
-            视图.getUint16(b + 4).toString(16)  + ':' +
-            视图.getUint16(b + 6).toString(16)  + ':' +
-            视图.getUint16(b + 8).toString(16)  + ':' +
-            视图.getUint16(b + 10).toString(16) + ':' +
-            视图.getUint16(b + 12).toString(16) + ':' +
-            视图.getUint16(b + 14).toString(16);
-        }
-        break;
-      default:
-        关门谢客(1008, '不认识的地址类型');
-        return;
-    }
-
-    const 数据负载起始 = 地址数据起始位 + 地址字节长度;
-    if (数据负载起始 > 有效长度) { 关门谢客(1008, '地址段越界'); return; }
+    if (目标端口 === 0 || 数据负载起始 > 有效长度) { 关门谢客(1008, '地址段越界'); return; }
 
     const 首包剩余长度 = 有效长度 - 数据负载起始;
 
